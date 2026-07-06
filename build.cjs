@@ -45,12 +45,16 @@ fs.writeFileSync(path.join(appDir, "package.json"),
 const exe = path.join(electronRoot, "electron.exe");
 const target = path.join(electronRoot, "hcompress.exe");
 if (fs.existsSync(exe)) { fs.renameSync(exe, target); }
+
+// 5. Copy icon
+const iconSrc = path.resolve("public/icon.ico");
+if (fs.existsSync(iconSrc)) fs.copyFileSync(iconSrc, path.join(electronRoot, "hcompress.ico"));
+
 // Clean
 for (const f of ["LICENSE","LICENSES.chromium.html","version"])
   try { fs.unlinkSync(path.join(electronRoot, f)); } catch {}
 
 console.log("\n✅ Done!  Launch:", target);
-console.log("Folder size:", (fs.statSync(electronRoot).size / 1e6).toFixed(0) + " MB (approx)");
 
 function copyDir(src, dest) {
   fs.mkdirSync(dest, { recursive: true });

@@ -55,7 +55,8 @@ function runPython(args) {
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1100, height: 750, minWidth: 700, minHeight: 500,
-    title: "hcompress v2", backgroundColor: "#06060a",
+    title: "hcompress", backgroundColor: "#06060a",
+    icon: path.join(__dirname, "../hcompress.ico"),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true, nodeIntegration: false,
