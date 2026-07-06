@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("hcompress", {
   openFile: () => ipcRenderer.invoke("dialog:openFile"),
   openDirectory: () => ipcRenderer.invoke("dialog:openDirectory"),
   openPluginDir: () => ipcRenderer.invoke("shell:openPath", ""),
+  listPlugins: () => ipcRenderer.invoke("hcompress:listPlugins"),
   onPluginsChanged: (callback) => {
     ipcRenderer.on("plugins:changed", (_e, info) => callback(info));
   },

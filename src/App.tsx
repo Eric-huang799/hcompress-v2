@@ -194,20 +194,66 @@ interface PluginState {
 }
 
 function PluginManager() {
-  const [plugins, setPlugins] = useState<PluginState[]>([
-    { id: "bomb_guard", name: "BombGuard", type: "decompress-hook", status: "enabled" },
-    { id: "hello_logger", name: "HelloLogger", type: "decompress-hook", status: "disabled" },
-    { id: "broken_demo", name: "BrokenPlugin (示例)", type: "extension", status: "error", errorMsg: "SyntaxError: invalid syntax at line 3" },
-  ]);
+  const [plugins, setPlugins] = useState<PluginState[]>([]);
+  const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState("");
 
-  // Listen for plugin changes from file watcher
+  // Fetch real plugins from Python backend
+  useState(() => {
+    const api = (window as any).hcompress;
+    if (api?.listPlugins) {
+      api.listPlugins().then((r: any) => {
+        if (r?.success && r.plugins) {
+          const list: PluginState[] = Object.entries(r.plugins).map(([name, info]: [string, any]) => ({
+            id: name.toLowerCase().replace(/[^a-z0-9]/g, "_"),
+            name,
+            type: info.type,
+            status: info.enabled ? "enabled" : "disabled",
+          }));
+          setPlugins(list);
+        }
+        setLoading(false);
+      }).catch(() => setLoading(false));
+    } else {
+      // Fallback demo data when no backend
+      setPlugins([
+        { id: "bomb_guard", name: "BombGuard", type: "decompress-hook", status: "enabled" },
+        { id: "broken_demo", name: "BrokenPlugin (示例)", type: "extension", status: "error", errorMsg: "SyntaxError: invalid syntax at line 3" },
+      ]);
+      setLoading(false);
+    }
+  });
+
+  // Fetch plugins helper
+  const fetchPlugins = () => {
+    const api = (window as any).hcompress;
+    if (api?.listPlugins) {
+      api.listPlugins().then((r: any) => {
+        if (r?.success && r.plugins) {
+          setPlugins(Object.entries(r.plugins).map(([name, info]: [string, any]) => ({
+            id: name.toLowerCase().replace(/[^a-z0-9]/g, "_"),
+            name, type: info.type,
+            status: info.enabled ? "enabled" : "disabled",
+          })));
+        }
+      });
+    }
+  };
+
+  // Initial load
+  useState(() => { fetchPlugins(); });
+
+  // Auto-refresh on file watcher events
   useState(() => {
     const api = (window as any).hcompress;
     if (api?.onPluginsChanged) {
       api.onPluginsChanged((info: any) => {
-        setToast(`🔄 检测到插件变更: ${info.file} — 请重启以生效`);
-        setTimeout(() => setToast(""), 4000);
+        setToast(`🔄 检测到新插件: ${info.file} — 自动加载中…`);
+        setTimeout(() => {
+          fetchPlugins();
+          setToast(`✅ 插件 ${info.file} 已加载`);
+          setTimeout(() => setToast(""), 3000);
+        }, 500);
       });
     }
   });
@@ -236,6 +282,16 @@ function PluginManager() {
           📂 打开插件目录
         </button>
       </div>
+      {loading && (
+        <div className="card" style={{ textAlign: "center", padding: 24, color: "var(--muted)" }}>
+          加载插件列表中…
+        </div>
+      )}
+      {!loading && plugins.length === 0 && (
+        <div className="card" style={{ textAlign: "center", padding: 24, color: "var(--muted)" }}>
+          暂无插件。将 <code style={{ color: "var(--accent)" }}>.py</code> 文件放入插件目录即可。
+        </div>
+      )}
       {plugins.map(p => (
         <div key={p.id} className="card" style={{
           opacity: p.status === "disabled" ? .55 : 1,

@@ -121,6 +121,27 @@ ipcMain.handle("hcompress:hcfInfo", async (_e, filePath) =>
   runPython(["-m", "hcompress", "info", filePath])
 );
 
+ipcMain.handle("hcompress:listPlugins", async () => {
+  const r = await runPython(["-c", `
+import json
+from hcompress.plugins import PluginRegistry
+reg = PluginRegistry()
+reg.discover_builtin()
+all_p = reg.get_all()
+result = {}
+for cat, lst in all_p.items():
+    for p in lst:
+        name = type(p).__name__
+        result[name] = {"type": cat, "enabled": True}
+print(json.dumps(result, ensure_ascii=False))
+`]);
+  try {
+    return { success: true, plugins: JSON.parse(r.stdout.trim().split("\n").pop() || "{}") };
+  } catch {
+    return { success: false, plugins: {} };
+  }
+});
+
 ipcMain.handle("dialog:openFile", async () => {
   const r = await dialog.showOpenDialog(mainWindow, { properties: ["openFile", "multiSelections"] });
   return r.canceled ? [] : r.filePaths;
