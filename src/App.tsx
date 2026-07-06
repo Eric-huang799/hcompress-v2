@@ -399,11 +399,11 @@ export default function App() {
     const dir = outputDir || files[0].path.replace(/[\\/][^\\/]+$/, "");
     let gotBomb = false;
     for (const f of files) {
-      // Strip known archive extensions, append _extracted for others
+      // Strip known archive extensions
       let outName = f.name;
-      if (f.name.endsWith(".hcf")) outName = f.name.slice(0, -4);
-      else if (/\.(gz|bz2|xz|zip|tar(\.gz|\.bz2|\.xz)?)$/i.test(f.name))
-        outName = f.name.replace(/\.[^.]*$/, "") + "_解压";
+      const extPat = /\.(hcf|gz|bz2|xz|zip|7z|rar|zst|zstd|br|lz4|tar(\.(gz|bz2|xz|zst))?)$/i;
+      if (extPat.test(f.name))
+        outName = f.name.replace(extPat, "") + "_解压";
       else outName = f.name + "_解压";
       const out = dir + "\\" + outName;
       try {
