@@ -72,8 +72,37 @@ function createWindow() {
 app.whenReady().then(() => {
   findPython(); // pre-warm
   createWindow();
+  watchPlugins();
 });
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+
+// ── Plugin file watcher ──
+function watchPlugins() {
+  const candidates = [
+    path.resolve(__dirname, "../../../hcompress/hcompress/plugins/builtin"),
+    path.resolve(__dirname, "../../../../hcompress/hcompress/plugins/builtin"),
+    path.join(require("os").homedir(), "hcompress/hcompress/plugins/builtin"),
+  ];
+  let pluginDir = null;
+  for (const c of candidates) {
+    if (require("fs").existsSync(c)) { pluginDir = c; break; }
+  }
+  if (!pluginDir) return;
+
+  try {
+    require("fs").watch(pluginDir, (eventType, filename) => {
+      if (filename && filename.endsWith(".py")) {
+        console.log("[plugin-watcher] detected:", filename, eventType);
+        if (mainWindow) {
+          mainWindow.webContents.send("plugins:changed", { file: filename, event: eventType });
+        }
+      }
+    });
+    console.log("[plugin-watcher] watching:", pluginDir);
+  } catch (e) {
+    console.log("[plugin-watcher] failed to watch:", e.message);
+  }
+}
 
 // ── IPC ──
 ipcMain.handle("hcompress:compress", async (_e, { input, output, level }) =>
@@ -100,4 +129,23 @@ ipcMain.handle("dialog:openFile", async () => {
 ipcMain.handle("dialog:openDirectory", async () => {
   const r = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
   return r.canceled ? [] : r.filePaths;
+});
+
+ipcMain.handle("shell:openPath", async (_e, dirPath) => {
+  const { shell } = require("electron");
+  const fs = require("fs");
+  // Try the given path, or find the hcompress plugins dir
+  if (fs.existsSync(dirPath)) {
+    return shell.openPath(dirPath);
+  }
+  // Try to find plugins directory relative to hcompress v1
+  const candidates = [
+    path.resolve(__dirname, "../../../hcompress/hcompress/plugins/builtin"),
+    path.resolve(__dirname, "../../../../hcompress/hcompress/plugins/builtin"),
+    path.join(require("os").homedir(), "hcompress/hcompress/plugins/builtin"),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return shell.openPath(c);
+  }
+  return "Plugin directory not found";
 });

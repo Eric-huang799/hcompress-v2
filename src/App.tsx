@@ -199,6 +199,18 @@ function PluginManager() {
     { id: "hello_logger", name: "HelloLogger", type: "decompress-hook", status: "disabled" },
     { id: "broken_demo", name: "BrokenPlugin (示例)", type: "extension", status: "error", errorMsg: "SyntaxError: invalid syntax at line 3" },
   ]);
+  const [toast, setToast] = useState("");
+
+  // Listen for plugin changes from file watcher
+  useState(() => {
+    const api = (window as any).hcompress;
+    if (api?.onPluginsChanged) {
+      api.onPluginsChanged((info: any) => {
+        setToast(`🔄 检测到插件变更: ${info.file} — 请重启以生效`);
+        setTimeout(() => setToast(""), 4000);
+      });
+    }
+  });
 
   const toggle = (id: string) => {
     setPlugins(prev => prev.map(p => {
@@ -218,7 +230,9 @@ function PluginManager() {
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontWeight: 600 }}>已加载 {plugins.length} 个插件</span>
-        <button className="btn btn-outline" style={{ fontSize: ".8em" }} onClick={() => alert("将插件 .py 放入 plugins/ 目录即可自动加载")}>
+        <button className="btn btn-outline" style={{ fontSize: ".8em" }} onClick={() => {
+          if (api) api.openPluginDir();
+        }}>
           📂 打开插件目录
         </button>
       </div>
@@ -258,6 +272,16 @@ function PluginManager() {
           </span>
         </div>
       </div>
+      {toast && (
+        <div style={{
+          position: "fixed", bottom: 24, right: 24, zIndex: 300,
+          background: "var(--card)", border: "1px solid var(--accent)",
+          borderRadius: 10, padding: "14px 20px", boxShadow: "var(--shadow)",
+          fontSize: ".88em", animation: "slideUp .3s ease-out",
+        }}>
+          {toast}
+        </div>
+      )}
     </div>
   );
 }
