@@ -4,51 +4,43 @@ const { spawn, spawnSync } = require("child_process");
 const os = require("os");
 
 let mainWindow = null;
-let pythonPath = null;
 
-// ── Find Python ──
-function findPython() {
-  if (pythonPath) return pythonPath;
+// ── Find hcompress engine EXE ──
+function findEngine() {
   const candidates = [
-    "python", "python3",
-    "C:\\ProgramData\\anaconda3\\python.exe",
-    "C:\\Users\\" + os.userInfo().username + "\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
-    "C:\\Users\\" + os.userInfo().username + "\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
-    "C:\\Python312\\python.exe", "C:\\Python311\\python.exe",
+    // Bundled with app (packaged)
+    path.join(__dirname, "hcompress-engine.exe"),
+    // Dev mode: sibling to electron/
+    path.join(__dirname, "../../dist/hcompress-engine.exe"),
+    path.join(__dirname, "../../../hcompress/dist/hcompress-engine.exe"),
   ];
   for (const c of candidates) {
-    try {
-      const r = spawnSync(c, ["--version"], { timeout: 3000 });
-      if (r.status === 0) { pythonPath = c; return c; }
-    } catch {}
+    if (require("fs").existsSync(c)) return c;
   }
   return null;
 }
 
-function runPython(args) {
-  const py = findPython();
-  if (!py) return Promise.resolve({ success: false, stderr: "未找到 Python。请安装 Python 后再试。" });
-
-  // Search for hcompress v1 — try multiple locations
-  const cwdCandidates = [
-    path.resolve(__dirname, "../../../hcompress"),  // release/../hcompress (sibling to hcompress-v2)
-    path.resolve(__dirname, "../../../../hcompress"), // release/resources/app/../../hcompress
-    path.join(os.homedir(), "hcompress"),
-  ];
-  let cwd = process.cwd();
-  for (const d of cwdCandidates) {
-    if (require("fs").existsSync(d)) { cwd = d; break; }
-  }
+function runEngine(args, extraEnv = {}) {
+  const exe = findEngine();
+  if (!exe) return Promise.resolve({ success: false, stderr: "引擎未找到，请重新安装 hcompress" });
 
   return new Promise((resolve) => {
-    const env = { ...process.env, PYTHONPATH: cwd, PYTHONIOENCODING: "utf-8" };
-    const proc = spawn(py, args, { cwd, env });
+    const env = { ...process.env, PYTHONIOENCODING: "utf-8", ...extraEnv };
+    const proc = spawn(exe, args, { env, windowsHide: true });
     let out = "", err = "";
-    proc.stdout.on("data", d => out += d);
-    proc.stderr.on("data", d => err += d);
-    proc.on("error", e => resolve({ success: false, stderr: "Python 启动失败: " + e.message }));
+    proc.stdout.on("data", d => out += String(d));
+    proc.stderr.on("data", d => err += String(d));
+    proc.on("error", e => resolve({ success: false, stderr: "引擎启动失败: " + e.message }));
     proc.on("close", code => resolve({ success: code === 0, stdout: out, stderr: err }));
   });
+}
+
+// ── Disabled plugins (session-level, shared across IPC calls) ──
+let disabledPlugins = new Set();
+
+function _disabledEnv() {
+  if (disabledPlugins.size === 0) return {};
+  return { HCOMPRESS_DISABLED_PLUGINS: Array.from(disabledPlugins).join(",") };
 }
 
 // ── Window ──
@@ -70,7 +62,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  findPython(); // pre-warm
+  findEngine(); // pre-warm
   createWindow();
   watchPlugins();
 });
@@ -106,40 +98,45 @@ function watchPlugins() {
 
 // ── IPC ──
 ipcMain.handle("hcompress:compress", async (_e, { input, output, level }) =>
-  runPython(["-m", "hcompress", "c", input, "-o", output, "--level", String(level || 6), "-f"])
+  runEngine(["c", input, "-o", output, "--level", String(level || 6), "-f"], _disabledEnv())
 );
 
 ipcMain.handle("hcompress:decompress", async (_e, { input, output }) => {
-  const r = await runPython(["-m", "hcompress", "d", input, "-o", output, "-f"]);
-  // Rich writes errors to stdout, not stderr — check both
+  const r = await runEngine(["d", input, "-o", output, "-f"], _disabledEnv());
   const combined = (r.stdout || "") + (r.stderr || "");
   r.bombDetected = combined.includes("检测到疑似压缩炸弹") || combined.includes("BombDetectedError");
   return r;
 });
 
 ipcMain.handle("hcompress:hcfInfo", async (_e, filePath) =>
-  runPython(["-m", "hcompress", "info", filePath])
+  runEngine(["info", filePath])
 );
 
 ipcMain.handle("hcompress:listPlugins", async () => {
-  const r = await runPython(["-c", `
-import json
-from hcompress.plugins import PluginRegistry
-reg = PluginRegistry()
-reg.discover_builtin()
-all_p = reg.get_all()
-result = {}
-for cat, lst in all_p.items():
-    for p in lst:
-        name = type(p).__name__
-        result[name] = {"type": cat, "enabled": True}
-print(json.dumps(result, ensure_ascii=False))
-`]);
+  const r = await runEngine(["plugin", "list", "--json"]);
   try {
-    return { success: true, plugins: JSON.parse(r.stdout.trim().split("\n").pop() || "{}") };
+    const data = JSON.parse((r.stdout || "").trim().split("\n").pop() || "{}");
+    if (data.plugins) {
+      data.plugins = data.plugins.map(p => ({
+        ...p,
+        enabled: p.enabled && !disabledPlugins.has(p.name)
+      }));
+      data.count_enabled = data.plugins.filter(p => p.enabled).length;
+    }
+    return { success: true, ...data };
   } catch {
-    return { success: false, plugins: {} };
+    return { success: false, plugins: [], count: 0, count_enabled: 0 };
   }
+});
+
+ipcMain.handle("hcompress:enablePlugin", async (_e, name) => {
+  disabledPlugins.delete(name);
+  return { success: true };
+});
+
+ipcMain.handle("hcompress:disablePlugin", async (_e, name) => {
+  disabledPlugins.add(name);
+  return { success: true };
 });
 
 ipcMain.handle("dialog:openFile", async () => {
@@ -150,6 +147,87 @@ ipcMain.handle("dialog:openFile", async () => {
 ipcMain.handle("dialog:openDirectory", async () => {
   const r = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
   return r.canceled ? [] : r.filePaths;
+});
+
+// ── Plugin Store ──
+const STORE_INDEX_URL = "https://raw.githubusercontent.com/Eric-huang799/hcompress-win-plugins/main/index.json";
+const STORE_RAW_BASE = "https://raw.githubusercontent.com/Eric-huang799/hcompress-win-plugins/main/";
+
+function _findPluginsDir() {
+  const fs = require("fs");
+  const candidates = [
+    path.join(path.dirname(process.execPath || process.argv[0]), "plugins"),
+    path.join(require("os").homedir(), ".hcompress", "plugins"),
+    path.join(__dirname, "../../../plugins"),
+  ];
+  for (const d of candidates) {
+    if (fs.existsSync(d)) return d;
+  }
+  const def = path.join(path.dirname(process.execPath || process.argv[0]), "plugins");
+  fs.mkdirSync(def, { recursive: true });
+  return def;
+}
+
+async function _netFetch(url) {
+  const { net } = require("electron");
+  const resp = await net.fetch(url);
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  return resp;
+}
+
+ipcMain.handle("store:fetch", async () => {
+  try {
+    const resp = await _netFetch(STORE_INDEX_URL);
+    const parsed = await resp.json();
+    const pluginsDir = _findPluginsDir();
+    const fs = require("fs");
+    const installed = fs.existsSync(pluginsDir)
+      ? fs.readdirSync(pluginsDir).filter(f => f.endsWith(".py"))
+      : [];
+    if (parsed.plugins) {
+      parsed.plugins = parsed.plugins.map(p => ({
+        ...p,
+        installed: installed.includes(p.file),
+      }));
+    }
+    return { success: true, ...parsed };
+  } catch (e) {
+    console.error("[store:fetch]", e);
+    return { success: false, error: "网络连接失败: " + (e.message || String(e)) };
+  }
+});
+
+ipcMain.handle("store:download", async (_e, pluginFile) => {
+  const { net } = require("electron");
+  const fs = require("fs");
+  const pluginsDir = _findPluginsDir();
+  try {
+    const resp = await net.fetch(STORE_RAW_BASE + pluginFile);
+    if (!resp.ok) return { success: false, error: "下载失败: HTTP " + resp.status };
+    const buf = await resp.arrayBuffer();
+    fs.writeFileSync(path.join(pluginsDir, pluginFile), Buffer.from(buf));
+    return { success: true };
+  } catch (e) {
+    console.error("[store:download]", e);
+    return { success: false, error: "下载失败: " + (e.message || String(e)) };
+  }
+});
+
+ipcMain.handle("store:uninstall", async (_e, pluginFile) => {
+  const fs = require("fs");
+  const pluginsDir = _findPluginsDir();
+  try {
+    fs.unlinkSync(path.join(pluginsDir, pluginFile));
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// ── open plugin dir for store ──
+ipcMain.handle("store:openDir", async () => {
+  const dir = _findPluginsDir();
+  return require("electron").shell.openPath(dir);
 });
 
 ipcMain.handle("shell:openPath", async (_e, dirPath) => {

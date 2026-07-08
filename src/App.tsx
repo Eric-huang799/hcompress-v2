@@ -23,12 +23,13 @@ function estRatio(ext: string): number {
 function est(ext: string): string { const r = estRatio(ext); return `~${(r*100).toFixed(0)}%`; }
 
 /* ── Sidebar ── */
-function Sidebar({ active, onNav }: { active: string; onNav: (t: string) => void }) {
+function Sidebar({ active, onNav, pluginCount }: { active: string; onNav: (t: string) => void; pluginCount: number }) {
   const items = [
     { id: "compress", label: "📦 压缩" },
     { id: "decompress", label: "📂 解压" },
     { id: "browser", label: "📁 归档浏览器" },
-    { id: "plugins", label: "🔌 插件", badge: "3" },
+    { id: "store", label: "🏪 插件商店" },
+    { id: "plugins", label: "🔌 已安装插件", badge: String(pluginCount) },
   ];
   return (
     <aside className="sidebar">
@@ -187,9 +188,199 @@ function ArchiveBrowser() {
   );
 }
 
+/* ── Plugin Store ── */
+interface StorePlugin {
+  name: string; type: string; version: string; author: string;
+  description: string; file: string; size_kb: number;
+  dependencies: string[]; tags: string[]; installed: boolean;
+}
+
+function PluginStore() {
+  const [plugins, setPlugins] = useState<StorePlugin[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [toast, setToast] = useState("");
+  const [downloading, setDownloading] = useState<string | null>(null);
+
+  const fetch = useCallback(() => {
+    setLoading(true); setError("");
+    const api = (window as any).hcompress;
+    if (api?.fetchStore) {
+      api.fetchStore().then((r: any) => {
+        if (r?.success) setPlugins(r.plugins || []);
+        else setError(r?.error || "获取商店失败");
+        setLoading(false);
+      }).catch(() => { setError("网络连接失败"); setLoading(false); });
+    } else {
+      setError("未连接到后端"); setLoading(false);
+    }
+  }, []);
+
+  useState(() => { fetch(); });
+
+  const download = async (p: StorePlugin) => {
+    const api = (window as any).hcompress;
+    if (!api?.downloadPlugin) return;
+    setDownloading(p.file);
+    const r = await api.downloadPlugin(p.file);
+    if (r?.success) {
+      setToast(`✅ ${p.name} 安装完成`);
+      setTimeout(() => setToast(""), 3000);
+      fetch(); // refresh installed status
+    } else {
+      setToast(`❌ 安装失败: ${r?.error || "未知错误"}`);
+      setTimeout(() => setToast(""), 3000);
+    }
+    setDownloading(null);
+  };
+
+  const uninstall = async (p: StorePlugin) => {
+    const api = (window as any).hcompress;
+    if (!api?.uninstallPlugin) return;
+    const r = await api.uninstallPlugin(p.file);
+    if (r?.success) {
+      setToast(`🗑 ${p.name} 已卸载`);
+      setTimeout(() => setToast(""), 3000);
+      fetch();
+    } else {
+      setToast(`❌ 卸载失败`);
+      setTimeout(() => setToast(""), 3000);
+    }
+  };
+
+  const typeIcon = (t: string) => {
+    switch (t) {
+      case "transform": return "🔄"; case "extension": return "🧩";
+      case "filter": return "🔍"; case "codec": return "📦";
+      default: return "🔌";
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontWeight: 600 }}>
+          🏪 Windows 插件社区
+          {!loading && (
+            <span style={{ fontWeight: 400, color: "var(--dim)", fontSize: ".85em", marginLeft: 8 }}>
+              共 {plugins.length} 个 · 已安装 {plugins.filter(p => p.installed).length} 个
+            </span>
+          )}
+        </span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn btn-outline" style={{ fontSize: ".8em" }} onClick={fetch} disabled={loading}>
+            🔄 刷新
+          </button>
+          <button className="btn btn-outline" style={{ fontSize: ".8em" }} onClick={() => {
+            (window as any).hcompress?.openStoreDir();
+          }}>
+            📂 打开目录
+          </button>
+        </div>
+      </div>
+
+      {loading && (
+        <div className="card" style={{ textAlign: "center", padding: 24, color: "var(--muted)" }}>
+          加载社区插件列表中…
+        </div>
+      )}
+      {error && (
+        <div className="card" style={{ textAlign: "center", padding: 24, borderColor: "rgba(229,83,91,.3)" }}>
+          <div style={{ color: "var(--red)", marginBottom: 8 }}>⚠ {error}</div>
+          <button className="btn btn-outline" style={{ fontSize: ".8em" }} onClick={fetch}>重试</button>
+        </div>
+      )}
+      {!loading && !error && plugins.length === 0 && (
+        <div className="card" style={{ textAlign: "center", padding: 24, color: "var(--muted)" }}>
+          社区暂无插件
+        </div>
+      )}
+
+      {plugins.map(p => (
+        <div key={p.file} className="card" style={{
+          opacity: p.installed ? 1 : .85,
+          borderColor: p.installed ? "rgba(69,217,193,.2)" : undefined,
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <span style={{ fontSize: "1.2em" }}>{typeIcon(p.type)}</span>
+                <span style={{ fontWeight: 600 }}>{p.name}</span>
+                <span style={{ fontSize: ".7em", color: "var(--dim)", background: "var(--bg)", padding: "1px 6px", borderRadius: 4 }}>
+                  v{p.version}
+                </span>
+                <span style={{ fontSize: ".72em", color: "var(--accent2)", background: "rgba(69,217,193,.1)", padding: "1px 7px", borderRadius: 4 }}>
+                  {p.type}
+                </span>
+                <span style={{ fontSize: ".7em", color: "var(--dim)", marginLeft: "auto" }}>
+                  ⚡{p.size_kb}KB
+                </span>
+              </div>
+              <div style={{ fontSize: ".82em", color: "var(--muted)", marginBottom: 2 }}>{p.description}</div>
+              <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+                {p.author && <span style={{ fontSize: ".72em", color: "var(--dim)" }}>by {p.author}</span>}
+                {p.dependencies && p.dependencies.length > 0 && (
+                  <span style={{ fontSize: ".72em", color: "var(--yellow)" }}>
+                    🔗 需要: {p.dependencies.join(", ")}
+                  </span>
+                )}
+                {p.tags && p.tags.length > 0 && (
+                  <span style={{ fontSize: ".7em", color: "var(--dim)" }}>
+                    {p.tags.map((t: string) => (
+                      <span key={t} style={{ marginRight: 4, background: "var(--bg)", padding: "1px 5px", borderRadius: 3 }}>{t}</span>
+                    ))}
+                  </span>
+                )}
+              </div>
+            </div>
+            <div style={{ marginLeft: 16, display: "flex", alignItems: "center", gap: 8 }}>
+              {p.installed ? (
+                <button
+                  className="btn btn-outline"
+                  style={{ fontSize: ".75em", padding: "4px 12px", color: "var(--green)", borderColor: "rgba(62,201,126,.3)" }}
+                  onClick={() => uninstall(p)}
+                >
+                  ✓ 已安装
+                </button>
+              ) : (
+                <button
+                  className="btn btn-primary"
+                  style={{ fontSize: ".75em", padding: "4px 12px" }}
+                  onClick={() => download(p)}
+                  disabled={downloading === p.file}
+                >
+                  {downloading === p.file ? "下载中…" : "⬇ 下载"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      ))}
+
+      <div className="card" style={{ borderStyle: "dashed", textAlign: "center", padding: 20, fontSize: ".85em", color: "var(--muted)" }}>
+        💡 下载的插件保存在 exe 旁边的 <code style={{ color: "var(--accent)" }}>plugins/</code> 目录<br />
+        下次压缩时自动生效 · 也可手动放入 .py 文件
+      </div>
+
+      {toast && (
+        <div style={{
+          position: "fixed", bottom: 24, right: 24, zIndex: 300,
+          background: "var(--card)", border: "1px solid var(--accent)",
+          borderRadius: 10, padding: "14px 20px", boxShadow: "var(--shadow)",
+          fontSize: ".88em", animation: "slideUp .3s ease-out",
+        }}>
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Plugin Manager ── */
 interface PluginState {
-  id: string; name: string; type: string; status: "enabled" | "disabled" | "error";
+  id: string; name: string; version: string; type: string;
+  description: string; author: string; priority: number;
+  status: "enabled" | "disabled" | "error";
   errorMsg?: string;
 }
 
@@ -198,47 +389,43 @@ function PluginManager() {
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState("");
 
-  // Fetch real plugins from Python backend
-  useState(() => {
+  const fetchPlugins = useCallback(() => {
     const api = (window as any).hcompress;
     if (api?.listPlugins) {
       api.listPlugins().then((r: any) => {
         if (r?.success && r.plugins) {
-          const list: PluginState[] = Object.entries(r.plugins).map(([name, info]: [string, any]) => ({
-            id: name.toLowerCase().replace(/[^a-z0-9]/g, "_"),
-            name,
-            type: info.type,
-            status: info.enabled ? "enabled" : "disabled",
-          }));
-          setPlugins(list);
+          setPlugins(r.plugins.map((p: any) => ({
+            id: p.name.toLowerCase().replace(/[^a-z0-9]/g, "_"),
+            name: p.name,
+            version: p.version || "0.0.0",
+            type: p.plugin_type,
+            description: p.description || "",
+            author: p.author || "",
+            priority: p.priority ?? 100,
+            status: p.enabled ? "enabled" : "disabled",
+          })));
+        } else {
+          setPlugins([
+            { id: "bomb_guard", name: "BombGuard", version: "1.0.0", type: "decompress-hook", description: "压缩炸弹检测", author: "hcompress", priority: 10, status: "enabled" },
+            { id: "broken_demo", name: "BrokenPlugin", version: "0.0.0", type: "extension", description: "示例插件，演示错误状态", author: "", priority: 100, status: "error", errorMsg: "SyntaxError: invalid syntax" },
+          ]);
         }
         setLoading(false);
-      }).catch(() => setLoading(false));
+      }).catch(() => {
+        setPlugins([
+          { id: "bomb_guard", name: "BombGuard", version: "1.0.0", type: "decompress-hook", description: "压缩炸弹检测", author: "hcompress", priority: 10, status: "enabled" },
+          { id: "broken_demo", name: "BrokenPlugin", version: "0.0.0", type: "extension", description: "示例插件，演示错误状态", author: "", priority: 100, status: "error", errorMsg: "SyntaxError: invalid syntax" },
+        ]);
+        setLoading(false);
+      });
     } else {
-      // Fallback demo data when no backend
       setPlugins([
-        { id: "bomb_guard", name: "BombGuard", type: "decompress-hook", status: "enabled" },
-        { id: "broken_demo", name: "BrokenPlugin (示例)", type: "extension", status: "error", errorMsg: "SyntaxError: invalid syntax at line 3" },
+        { id: "bomb_guard", name: "BombGuard", version: "1.0.0", type: "decompress-hook", description: "压缩炸弹检测", author: "hcompress", priority: 10, status: "enabled" },
+        { id: "broken_demo", name: "BrokenPlugin", version: "0.0.0", type: "extension", description: "示例插件，演示错误状态", author: "", priority: 100, status: "error", errorMsg: "SyntaxError: invalid syntax" },
       ]);
       setLoading(false);
     }
-  });
-
-  // Fetch plugins helper
-  const fetchPlugins = () => {
-    const api = (window as any).hcompress;
-    if (api?.listPlugins) {
-      api.listPlugins().then((r: any) => {
-        if (r?.success && r.plugins) {
-          setPlugins(Object.entries(r.plugins).map(([name, info]: [string, any]) => ({
-            id: name.toLowerCase().replace(/[^a-z0-9]/g, "_"),
-            name, type: info.type,
-            status: info.enabled ? "enabled" : "disabled",
-          })));
-        }
-      });
-    }
-  };
+  }, []);
 
   // Initial load
   useState(() => { fetchPlugins(); });
@@ -248,7 +435,7 @@ function PluginManager() {
     const api = (window as any).hcompress;
     if (api?.onPluginsChanged) {
       api.onPluginsChanged((info: any) => {
-        setToast(`🔄 检测到新插件: ${info.file} — 自动加载中…`);
+        setToast(`🔄 检测到新插件: ${info.file}`);
         setTimeout(() => {
           fetchPlugins();
           setToast(`✅ 插件 ${info.file} 已加载`);
@@ -258,12 +445,24 @@ function PluginManager() {
     }
   });
 
-  const toggle = (id: string) => {
-    setPlugins(prev => prev.map(p => {
-      if (p.id !== id) return p;
-      if (p.status === "enabled") return { ...p, status: "disabled" as const };
-      return { ...p, status: "enabled" as const, errorMsg: undefined };
-    }));
+  const toggle = async (id: string, name: string, current: string) => {
+    const api = (window as any).hcompress;
+    if (api?.enablePlugin && api?.disablePlugin) {
+      if (current === "enabled") {
+        await api.disablePlugin(name);
+        setToast(`🔌 ${name} 已关闭`);
+      } else {
+        await api.enablePlugin(name);
+        setToast(`🔌 ${name} 已启用`);
+      }
+      setTimeout(() => setToast(""), 2500);
+      fetchPlugins();
+    } else {
+      setPlugins(prev => prev.map(p => {
+        if (p.id !== id) return p;
+        return { ...p, status: (current === "enabled" ? "disabled" : "enabled") as "enabled" | "disabled" };
+      }));
+    }
   };
 
   const statusIcon = (s: string) => {
@@ -275,7 +474,12 @@ function PluginManager() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontWeight: 600 }}>已加载 {plugins.length} 个插件</span>
+        <span style={{ fontWeight: 600 }}>
+          已加载 {plugins.length} 个插件
+          <span style={{ fontWeight: 400, color: "var(--dim)", fontSize: ".85em", marginLeft: 8 }}>
+            ({plugins.filter(p => p.status === "enabled").length} 启用)
+          </span>
+        </span>
         <button className="btn btn-outline" style={{ fontSize: ".8em" }} onClick={() => {
           if (api) api.openPluginDir();
         }}>
@@ -296,18 +500,35 @@ function PluginManager() {
         <div key={p.id} className="card" style={{
           opacity: p.status === "disabled" ? .55 : 1,
           borderColor: p.status === "error" ? "rgba(229,83,91,.25)" : undefined,
+          transition: "opacity .2s",
         }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ fontWeight: 600, marginBottom: 2 }}>{p.name}</div>
-              <div style={{ fontSize: ".78em", color: "var(--dim)" }}>{p.type}</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <span style={{ fontWeight: 600 }}>{p.name}</span>
+                <span style={{ fontSize: ".7em", color: "var(--dim)", background: "var(--bg)", padding: "1px 6px", borderRadius: 4 }}>
+                  v{p.version}
+                </span>
+                <span style={{ fontSize: ".72em", color: "var(--accent2)", background: "rgba(69,217,193,.1)", padding: "1px 7px", borderRadius: 4 }}>
+                  {p.type}
+                </span>
+                <span style={{ fontSize: ".7em", color: "var(--dim)", marginLeft: "auto" }} title="优先级（越小越优先）">
+                  P{p.priority}
+                </span>
+              </div>
+              {p.description && (
+                <div style={{ fontSize: ".82em", color: "var(--muted)", marginBottom: 2 }}>{p.description}</div>
+              )}
+              {p.author && (
+                <div style={{ fontSize: ".72em", color: "var(--dim)" }}>by {p.author}</div>
+              )}
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: 16, marginTop: 2 }}>
               {statusIcon(p.status)}
               <button
                 className="btn btn-outline"
                 style={{ fontSize: ".75em", padding: "4px 12px" }}
-                onClick={() => toggle(p.id)}
+                onClick={() => toggle(p.id, p.name, p.status)}
               >
                 {p.status === "enabled" ? "关闭" : "启用"}
               </button>
@@ -355,6 +576,20 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [nextId, setNextId] = useState(1);
   const [outputDir, setOutputDir] = useState("");
+  const [pluginCount, setPluginCount] = useState(0);
+
+  // Refresh plugin count periodically and on nav change
+  useState(() => {
+    const update = () => {
+      if (!api?.listPlugins) return;
+      api.listPlugins().then((r: any) => {
+        if (r?.plugins) setPluginCount(r.plugins.filter((p: any) => p.enabled).length);
+      }).catch(() => {});
+    };
+    update();
+    const interval = setInterval(update, 5000);
+    return () => clearInterval(interval);
+  });
 
   const onAddFiles = useCallback(async () => {
     if (!api) { alert("未连接到后端。请通过 Electron 运行此应用。"); return; }
@@ -430,7 +665,7 @@ export default function App() {
 
   return (
     <>
-      <Sidebar active={nav} onNav={setNav} />
+      <Sidebar active={nav} onNav={setNav} pluginCount={pluginCount} />
       <main className="main">
         {showToolbar && (
           <div className="toolbar">
@@ -456,6 +691,8 @@ export default function App() {
             </>
           ) : nav === "browser" ? (
             <ArchiveBrowser />
+          ) : nav === "store" ? (
+            <PluginStore />
           ) : nav === "plugins" ? (
             <PluginManager />
           ) : null}
