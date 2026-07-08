@@ -23,7 +23,7 @@ function estRatio(ext: string): number {
 function est(ext: string): string { const r = estRatio(ext); return `~${(r*100).toFixed(0)}%`; }
 
 /* ── Sidebar ── */
-function Sidebar({ active, onNav, pluginCount }: { active: string; onNav: (t: string) => void; pluginCount: number }) {
+function Sidebar({ active, onNav, pluginCount, onRefreshPlugins }: { active: string; onNav: (t: string) => void; pluginCount: number; onRefreshPlugins: () => void }) {
   const items = [
     { id: "compress", label: "📦 压缩" },
     { id: "decompress", label: "📂 解压" },
@@ -40,7 +40,10 @@ function Sidebar({ active, onNav, pluginCount }: { active: string; onNav: (t: st
         </button>
       ))}
       <div style={{ flex: 1 }} />
-      <span style={{ color: "var(--dim)", fontSize: ".82em", padding: "8px 12px" }}>🛡️ BombGuard 已启用</span>
+      <button className="btn btn-ghost" style={{ fontSize: ".75em", color: "var(--dim)", justifyContent: "center" }}
+              onClick={onRefreshPlugins} title="手动刷新插件">
+        🛡️ BombGuard · 🔄 刷新
+      </button>
     </aside>
   );
 }
@@ -91,13 +94,26 @@ function SettingsModal({ mode, setMode, onClose }: {
 }
 
 /* ── Drop Zone ── */
-function DropZone({ onAdd }: { onAdd: () => void }) {
+function DropZone({ onAdd, onDropFiles }: { onAdd: () => void; onDropFiles: (paths: string[]) => void }) {
   const [drag, setDrag] = useState(false);
   return (
     <div className={`dropzone ${drag ? "active" : ""}`}
          onDragOver={e => { e.preventDefault(); setDrag(true); }}
          onDragLeave={() => setDrag(false)}
-         onDrop={e => { e.preventDefault(); setDrag(false); onAdd(); }}
+         onDrop={e => {
+           e.preventDefault(); setDrag(false);
+           const dt = e.dataTransfer;
+           if (dt?.files?.length) {
+             const paths: string[] = [];
+             for (let i = 0; i < dt.files.length; i++) {
+               const f = dt.files[i];
+               const p = api?.getPathForFile ? api.getPathForFile(f) : (f as any).path;
+               if (p) paths.push(p);
+             }
+             if (paths.length) { onDropFiles(paths); return; }
+           }
+           onAdd();
+         }}
          onClick={onAdd}>
       <div className="icon">📦</div>
       <div className="hint">拖拽文件或文件夹到此处<br />
@@ -202,7 +218,7 @@ function PluginStore() {
   const [toast, setToast] = useState("");
   const [downloading, setDownloading] = useState<string | null>(null);
 
-  const fetch = useCallback(() => {
+  const fetchStore = useCallback(() => {
     setLoading(true); setError("");
     const api = (window as any).hcompress;
     if (api?.fetchStore) {
@@ -216,7 +232,7 @@ function PluginStore() {
     }
   }, []);
 
-  useState(() => { fetch(); });
+  useState(() => { fetchStore(); });
 
   const download = async (p: StorePlugin) => {
     const api = (window as any).hcompress;
@@ -226,7 +242,7 @@ function PluginStore() {
     if (r?.success) {
       setToast(`✅ ${p.name} 安装完成`);
       setTimeout(() => setToast(""), 3000);
-      fetch(); // refresh installed status
+      fetchStore(); // refresh installed status
     } else {
       setToast(`❌ 安装失败: ${r?.error || "未知错误"}`);
       setTimeout(() => setToast(""), 3000);
@@ -241,7 +257,7 @@ function PluginStore() {
     if (r?.success) {
       setToast(`🗑 ${p.name} 已卸载`);
       setTimeout(() => setToast(""), 3000);
-      fetch();
+      fetchStore();
     } else {
       setToast(`❌ 卸载失败`);
       setTimeout(() => setToast(""), 3000);
@@ -268,7 +284,7 @@ function PluginStore() {
           )}
         </span>
         <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn btn-outline" style={{ fontSize: ".8em" }} onClick={fetch} disabled={loading}>
+          <button className="btn btn-outline" style={{ fontSize: ".8em" }} onClick={fetchStore} disabled={loading}>
             🔄 刷新
           </button>
           <button className="btn btn-outline" style={{ fontSize: ".8em" }} onClick={() => {
@@ -287,7 +303,7 @@ function PluginStore() {
       {error && (
         <div className="card" style={{ textAlign: "center", padding: 24, borderColor: "rgba(229,83,91,.3)" }}>
           <div style={{ color: "var(--red)", marginBottom: 8 }}>⚠ {error}</div>
-          <button className="btn btn-outline" style={{ fontSize: ".8em" }} onClick={fetch}>重试</button>
+          <button className="btn btn-outline" style={{ fontSize: ".8em" }} onClick={fetchStore}>重试</button>
         </div>
       )}
       {!loading && !error && plugins.length === 0 && (
@@ -576,20 +592,17 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [nextId, setNextId] = useState(1);
   const [outputDir, setOutputDir] = useState("");
-  const [pluginCount, setPluginCount] = useState(0);
+  const [pluginCount, setPluginCount] = useState(3);
 
-  // Refresh plugin count periodically and on nav change
-  useState(() => {
-    const update = () => {
-      if (!api?.listPlugins) return;
-      api.listPlugins().then((r: any) => {
-        if (r?.plugins) setPluginCount(r.plugins.filter((p: any) => p.enabled).length);
-      }).catch(() => {});
-    };
-    update();
-    const interval = setInterval(update, 5000);
-    return () => clearInterval(interval);
-  });
+  // Fetch plugin count on mount and on page nav
+  const refreshPluginCount = useCallback(() => {
+    if (!api?.listPlugins) return;
+    api.listPlugins().then((r: any) => {
+      if (r?.plugins) setPluginCount(r.plugins.filter((p: any) => p.enabled).length);
+    }).catch(() => {});
+  }, []);
+
+  useState(() => { refreshPluginCount(); });
 
   const onAddFiles = useCallback(async () => {
     if (!api) { alert("未连接到后端。请通过 Electron 运行此应用。"); return; }
@@ -599,6 +612,16 @@ export default function App() {
       setFiles(prev => [...prev, { id, name: p.split(/[\\/]/).pop()!, path: p, size: 0, isDir: false, ext: p.slice(p.lastIndexOf(".")) || "" }]);
     }
   }, []);
+
+  const onDropFiles = useCallback((paths: string[]) => {
+    let nid = nextId;
+    const newFiles: FileEntry[] = [];
+    for (const p of paths) {
+      newFiles.push({ id: nid++, name: p.split(/[\\/]/).pop()!, path: p, size: 0, isDir: false, ext: p.slice(p.lastIndexOf(".")) || "" });
+    }
+    setNextId(nid);
+    setFiles(prev => [...prev, ...newFiles]);
+  }, [nextId]);
 
   const onAddFolder = useCallback(async () => {
     if (!api) return;
@@ -665,7 +688,7 @@ export default function App() {
 
   return (
     <>
-      <Sidebar active={nav} onNav={setNav} pluginCount={pluginCount} />
+      <Sidebar active={nav} onNav={setNav} pluginCount={pluginCount} onRefreshPlugins={refreshPluginCount} />
       <main className="main">
         {showToolbar && (
           <div className="toolbar">
@@ -685,7 +708,7 @@ export default function App() {
         <div className="content">
           {nav === "compress" || nav === "decompress" ? (
             <>
-              <DropZone onAdd={onAddFiles} />
+              <DropZone onAdd={onAddFiles} onDropFiles={onDropFiles} />
               <FileTable files={files} onRemove={onRemove} />
               {compressing && <Prog pct={50} isDecomp={isDecomp} />}
             </>

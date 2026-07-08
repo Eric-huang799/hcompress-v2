@@ -38,9 +38,13 @@ fs.rmSync(appDir, { recursive: true, force: true });
 fs.mkdirSync(appDir, { recursive: true });
 copyDir("dist", path.join(appDir, "dist"));
 copyDir("electron", path.join(appDir, "electron"));
-// Copy engine exe
-const engineSrc = path.resolve("electron/hcompress-engine.exe");
-if (fs.existsSync(engineSrc)) fs.copyFileSync(engineSrc, path.join(appDir, "electron/hcompress-engine.exe"));
+// Copy engine (onedir)
+const engineDir = path.resolve("electron/hcompress-engine");
+if (fs.existsSync(engineDir)) {
+  const destDir = path.join(appDir, "electron/hcompress-engine");
+  fs.rmSync(destDir, { recursive: true, force: true });
+  copyDir(engineDir, destDir);
+}
 fs.writeFileSync(path.join(appDir, "package.json"),
   JSON.stringify({ main: "electron/main.cjs", name: "hcompress", version: "2.0.0" }, null, 2));
 

@@ -8,11 +8,13 @@ let mainWindow = null;
 // ── Find hcompress engine EXE ──
 function findEngine() {
   const candidates = [
-    // Bundled with app (packaged)
+    // Bundled onedir (packaged)
+    path.join(__dirname, "hcompress-engine", "hcompress-engine.exe"),
+    // Bundled onefile (legacy)
     path.join(__dirname, "hcompress-engine.exe"),
-    // Dev mode: sibling to electron/
-    path.join(__dirname, "../../dist/hcompress-engine.exe"),
-    path.join(__dirname, "../../../hcompress/dist/hcompress-engine.exe"),
+    // Dev mode
+    path.join(__dirname, "../../dist/hcompress-engine", "hcompress-engine.exe"),
+    path.join(__dirname, "../../../hcompress/dist/hcompress-engine", "hcompress-engine.exe"),
   ];
   for (const c of candidates) {
     if (require("fs").existsSync(c)) return c;

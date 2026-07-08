@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("hcompress", {
   compress: (input, output, level) =>
@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld("hcompress", {
   downloadPlugin: (file) => ipcRenderer.invoke("store:download", file),
   uninstallPlugin: (file) => ipcRenderer.invoke("store:uninstall", file),
   openStoreDir: () => ipcRenderer.invoke("store:openDir"),
+  getPathForFile: (file) => webUtils.getPathForFile(file),
   onPluginsChanged: (callback) => {
     ipcRenderer.on("plugins:changed", (_e, info) => callback(info));
   },
