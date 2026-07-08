@@ -604,6 +604,16 @@ export default function App() {
 
   useState(() => { refreshPluginCount(); });
 
+  // Timeout watchdog listener
+  const [timeoutWarning, setTimeoutWarning] = useState<{ reqId: number; action: string; file: string; timeout: number } | null>(null);
+  useState(() => {
+    if (api?.onTimeoutWarning && api?.respondTimeout) {
+      api.onTimeoutWarning((info: any) => {
+        setTimeoutWarning(info);
+      });
+    }
+  });
+
   const onAddFiles = useCallback(async () => {
     if (!api) { alert("未连接到后端。请通过 Electron 运行此应用。"); return; }
     const paths: string[] = await api.openFile();
@@ -722,6 +732,36 @@ export default function App() {
         </div>
       </main>
       {showSettings && <SettingsModal mode={mode} setMode={setMode} onClose={() => setShowSettings(false)} />}
+      {timeoutWarning && (
+        <div className="modal-overlay">
+          <div className="modal" style={{ maxWidth: 440, borderColor: "rgba(229,179,60,.4)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+              <span style={{ fontSize: "2em" }}>⏳</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: "1.1em", color: "var(--yellow)" }}>{timeoutWarning.action}超时警告</div>
+                <div style={{ fontSize: ".85em", color: "var(--muted)" }}>
+                  文件: {timeoutWarning.file.split(/[\\/]/).pop()} &nbsp;·&nbsp;
+                  已超过 {Math.round(timeoutWarning.timeout / 1000)}s 阈值
+                </div>
+              </div>
+            </div>
+            <div style={{ fontSize: ".85em", color: "var(--muted)", lineHeight: 1.6, marginBottom: 16 }}>
+              {timeoutWarning.action}操作响应时间异常。<br />
+              请选择继续等待或终止操作。
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn btn-outline" onClick={() => {
+                api.respondTimeout(timeoutWarning.reqId, "abort");
+                setTimeoutWarning(null);
+              }} style={{ color: "var(--red)" }}>终止操作</button>
+              <button className="btn btn-primary" onClick={() => {
+                api.respondTimeout(timeoutWarning.reqId, "continue");
+                setTimeoutWarning(null);
+              }}>继续等待</button>
+            </div>
+          </div>
+        </div>
+      )}
       {bombAlert && (
         <div className="modal-overlay" onClick={() => setBombAlert(null)}>
           <div className="modal" style={{ maxWidth: 500, borderColor: "rgba(229,83,91,.4)" }}>

@@ -37,6 +37,90 @@ function runEngine(args, extraEnv = {}) {
   });
 }
 
+// ── Timeout watchdog for compress / decompress ──
+let _reqCounter = 0;
+
+function _calcTimeout(args) {
+  // Estimate file size for timeout calculation
+  let sizeBytes = 0;
+  try {
+    if (args[0] === "c" || args[0] === "d") {
+      const p = args[1];  // input path
+      if (p && require("fs").existsSync(p)) {
+        sizeBytes = require("fs").statSync(p).size;
+      }
+    }
+  } catch (_) {}
+  const mb = sizeBytes / (1024 * 1024);
+  if (sizeBytes === 0) return 8000;                     // unknown → 8s
+  if (mb < 100) return 8000;                            // <100MB → 8s
+  if (mb >= 1024) return 30000;                         // >=1GB → 30s
+  return Math.round(8000 + (30000 - 8000) * (mb - 100) / (1024 - 100));
+}
+
+function runEngineWatchdog(args, extraEnv = {}) {
+  const exe = findEngine();
+  if (!exe) return Promise.resolve({ success: false, stderr: "引擎未找到" });
+
+  const timeoutMs = _calcTimeout(args);
+  const reqId = ++_reqCounter;
+
+  return new Promise((resolve) => {
+    const env = { ...process.env, PYTHONIOENCODING: "utf-8", ...extraEnv };
+    const proc = spawn(exe, args, { env, windowsHide: true });
+    let out = "", err = "";
+    let finished = false;
+    let warnTimer = null;
+
+    const done = (result) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(warnTimer);
+      resolve(result);
+    };
+
+    proc.stdout.on("data", d => out += String(d));
+    proc.stderr.on("data", d => err += String(d));
+    proc.on("error", e => done({ success: false, stderr: "引擎启动失败: " + e.message }));
+    proc.on("close", code => done({ success: code === 0, stdout: out, stderr: err }));
+
+    warnTimer = setTimeout(() => {
+      if (finished) return;
+      if (mainWindow) {
+        mainWindow.webContents.send("timeout:warning", {
+          reqId, timeout: timeoutMs,
+          action: args[0] === "d" ? "解压" : "压缩",
+          file: String(args[1] || ""),
+        });
+      }
+    }, timeoutMs);
+
+    // Listen for user response — use a named channel per request
+    const chan = "timeout:resp:" + reqId;
+    const handler = (_e, choice) => {
+      if (choice === "abort") {
+        ipcMain.removeListener(chan, handler);
+        proc.kill();
+        done({ success: false, stderr: "操作已被用户终止" });
+      } else {
+        // Continue — restart the same timeout, warn again later
+        clearTimeout(warnTimer);
+        warnTimer = setTimeout(() => {
+          if (finished) return;
+          if (mainWindow) {
+            mainWindow.webContents.send("timeout:warning", {
+              reqId, timeout: timeoutMs,
+              action: args[0] === "d" ? "解压" : "压缩",
+              file: String(args[1] || ""),
+            });
+          }
+        }, timeoutMs);
+      }
+    };
+    ipcMain.on(chan, handler);
+  });
+}
+
 // ── Disabled plugins (session-level, shared across IPC calls) ──
 let disabledPlugins = new Set();
 
@@ -100,11 +184,11 @@ function watchPlugins() {
 
 // ── IPC ──
 ipcMain.handle("hcompress:compress", async (_e, { input, output, level }) =>
-  runEngine(["c", input, "-o", output, "--level", String(level || 6), "-f"], _disabledEnv())
+  runEngineWatchdog(["c", input, "-o", output, "--level", String(level || 6), "-f"], _disabledEnv())
 );
 
 ipcMain.handle("hcompress:decompress", async (_e, { input, output }) => {
-  const r = await runEngine(["d", input, "-o", output, "-f"], _disabledEnv());
+  const r = await runEngineWatchdog(["d", input, "-o", output, "-f"], _disabledEnv());
   const combined = (r.stdout || "") + (r.stderr || "");
   r.bombDetected = combined.includes("检测到疑似压缩炸弹") || combined.includes("BombDetectedError");
   return r;

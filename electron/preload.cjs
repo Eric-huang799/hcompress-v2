@@ -18,6 +18,12 @@ contextBridge.exposeInMainWorld("hcompress", {
   uninstallPlugin: (file) => ipcRenderer.invoke("store:uninstall", file),
   openStoreDir: () => ipcRenderer.invoke("store:openDir"),
   getPathForFile: (file) => webUtils.getPathForFile(file),
+  onTimeoutWarning: (callback) => {
+    ipcRenderer.on("timeout:warning", (_e, info) => callback(info));
+  },
+  respondTimeout: (reqId, choice) => {
+    ipcRenderer.send("timeout:resp:" + reqId, choice);
+  },
   onPluginsChanged: (callback) => {
     ipcRenderer.on("plugins:changed", (_e, info) => callback(info));
   },
