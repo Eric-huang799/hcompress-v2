@@ -23,20 +23,20 @@ function estRatio(ext: string): number {
 function est(ext: string): string { const r = estRatio(ext); return `~${(r*100).toFixed(0)}%`; }
 
 /* ── Sidebar ── */
-function Sidebar({ active, onNav, pluginCount, onRefreshPlugins }: { active: string; onNav: (t: string) => void; pluginCount: number; onRefreshPlugins: () => void }) {
+function Sidebar({ active, onNav, pluginCount, subCount, onRefreshPlugins }: { active: string; onNav: (t: string) => void; pluginCount: number; subCount: number; onRefreshPlugins: () => void }) {
   const items = [
     { id: "compress", label: "📦 压缩" },
     { id: "decompress", label: "📂 解压" },
     { id: "browser", label: "📁 归档浏览器" },
     { id: "store", label: "🏪 插件商店" },
-    { id: "plugins", label: "🔌 已安装插件", badge: String(pluginCount) },
+    { id: "plugins", label: "🔌 已安装插件", badge: String(pluginCount), subBadge: subCount > 0 ? String(subCount) : undefined },
   ];
   return (
     <aside className="sidebar">
       <div className="logo">hcompress <span>v2</span></div>
       {items.map(it => (
         <button key={it.id} className={`nav-item ${active === it.id ? "active" : ""}`} onClick={() => onNav(it.id)}>
-          {it.label}{it.badge && <span className="badge">{it.badge}</span>}
+          {it.label}{it.badge && <span className="badge">{it.badge}</span>}{it.subBadge && <span className="badge" style={{ background: "var(--yellow)", color: "#000", fontSize: ".65em", marginLeft: 2 }}>{it.subBadge}</span>}
         </button>
       ))}
       <div style={{ flex: 1 }} />
@@ -398,6 +398,7 @@ interface PluginState {
   description: string; author: string; priority: number;
   status: "enabled" | "disabled" | "error";
   errorMsg?: string;
+  isHub?: boolean; subCount?: number;
 }
 
 function PluginManager() {
@@ -593,12 +594,16 @@ export default function App() {
   const [nextId, setNextId] = useState(1);
   const [outputDir, setOutputDir] = useState("");
   const [pluginCount, setPluginCount] = useState(3);
+  const [subCount, setSubCount] = useState(0);
 
   // Fetch plugin count on mount and on page nav
   const refreshPluginCount = useCallback(() => {
     if (!api?.listPlugins) return;
     api.listPlugins().then((r: any) => {
-      if (r?.plugins) setPluginCount(r.plugins.filter((p: any) => p.enabled).length);
+      if (r?.plugins) {
+        setPluginCount(r.plugins.filter((p: any) => p.enabled && !p.is_hub).length);
+        setSubCount(r.plugins.reduce((s: number, p: any) => s + (p.sub_count || 0), 0));
+      }
     }).catch(() => {});
   }, []);
 
@@ -698,7 +703,7 @@ export default function App() {
 
   return (
     <>
-      <Sidebar active={nav} onNav={setNav} pluginCount={pluginCount} onRefreshPlugins={refreshPluginCount} />
+      <Sidebar active={nav} onNav={setNav} pluginCount={pluginCount} subCount={subCount} onRefreshPlugins={refreshPluginCount} />
       <main className="main">
         {showToolbar && (
           <div className="toolbar">

@@ -24,6 +24,9 @@ contextBridge.exposeInMainWorld("hcompress", {
   respondTimeout: (reqId, choice) => {
     ipcRenderer.send("timeout:resp:" + reqId, choice);
   },
+  manageHub: (hubType, action, name) => {
+    return ipcRenderer.invoke("hub:config", { hubType, action, name });
+  },
   onPluginsChanged: (callback) => {
     ipcRenderer.on("plugins:changed", (_e, info) => callback(info));
   },

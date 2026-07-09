@@ -236,8 +236,14 @@ ipcMain.handle("dialog:openDirectory", async () => {
 });
 
 // ── Plugin Store ──
-const STORE_INDEX_URL = "https://raw.githubusercontent.com/Eric-huang799/hcompress-win-plugins/main/index.json";
-const STORE_RAW_BASE = "https://raw.githubusercontent.com/Eric-huang799/hcompress-win-plugins/main/";
+const STORE_URLS = [
+  "https://cdn.jsdelivr.net/gh/Eric-huang799/hcompress-win-plugins@main/index.json",
+  "https://raw.githubusercontent.com/Eric-huang799/hcompress-win-plugins/main/index.json",
+];
+const STORE_RAW_BASES = [
+  "https://cdn.jsdelivr.net/gh/Eric-huang799/hcompress-win-plugins@main/",
+  "https://raw.githubusercontent.com/Eric-huang799/hcompress-win-plugins/main/",
+];
 
 function _findPluginsDir() {
   const fs = require("fs");
@@ -254,26 +260,49 @@ function _findPluginsDir() {
   return def;
 }
 
-async function _netFetch(url) {
+async function _netFetchMulti(urls) {
   const { net } = require("electron");
-  const resp = await net.fetch(url);
-  if (!resp.ok) throw new Error("HTTP " + resp.status);
-  return resp;
+  let lastErr = null;
+  for (const url of urls) {
+    try {
+      const resp = await net.fetch(url);
+      if (resp.ok) return resp;
+      lastErr = new Error("HTTP " + resp.status);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("所有源均不可用");
 }
 
 ipcMain.handle("store:fetch", async () => {
   try {
-    const resp = await _netFetch(STORE_INDEX_URL);
+    const resp = await _netFetchMulti(STORE_URLS);
     const parsed = await resp.json();
+
+    // Check external plugins dir
     const pluginsDir = _findPluginsDir();
     const fs = require("fs");
-    const installed = fs.existsSync(pluginsDir)
+    const externalInstalled = fs.existsSync(pluginsDir)
       ? fs.readdirSync(pluginsDir).filter(f => f.endsWith(".py"))
       : [];
+
+    // Also query engine for builtin plugins
+    let engineNames = new Set();
+    try {
+      const engineResp = await runEngine(["plugin", "list", "--json"]);
+      if (engineResp.success && engineResp.stdout) {
+        const data = JSON.parse(String(engineResp.stdout).trim().split("\n").pop() || "{}");
+        if (data.plugins) {
+          data.plugins.forEach(p => engineNames.add(p.name));
+        }
+      }
+    } catch (_) {}
+
     if (parsed.plugins) {
       parsed.plugins = parsed.plugins.map(p => ({
         ...p,
-        installed: installed.includes(p.file),
+        installed: externalInstalled.includes(p.file) || engineNames.has(p.name),
       }));
     }
     return { success: true, ...parsed };
@@ -287,16 +316,20 @@ ipcMain.handle("store:download", async (_e, pluginFile) => {
   const { net } = require("electron");
   const fs = require("fs");
   const pluginsDir = _findPluginsDir();
-  try {
-    const resp = await net.fetch(STORE_RAW_BASE + pluginFile);
-    if (!resp.ok) return { success: false, error: "下载失败: HTTP " + resp.status };
-    const buf = await resp.arrayBuffer();
-    fs.writeFileSync(path.join(pluginsDir, pluginFile), Buffer.from(buf));
-    return { success: true };
-  } catch (e) {
-    console.error("[store:download]", e);
-    return { success: false, error: "下载失败: " + (e.message || String(e)) };
+  let lastErr = null;
+
+  for (const base of STORE_RAW_BASES) {
+    try {
+      const resp = await net.fetch(base + pluginFile);
+      if (!resp.ok) { lastErr = new Error("HTTP " + resp.status); continue; }
+      const buf = await resp.arrayBuffer();
+      fs.writeFileSync(path.join(pluginsDir, pluginFile), Buffer.from(buf));
+      return { success: true };
+    } catch (e) {
+      lastErr = e;
+    }
   }
+  return { success: false, error: "下载失败: " + (lastErr ? lastErr.message : "所有源不可用") };
 });
 
 ipcMain.handle("store:uninstall", async (_e, pluginFile) => {
@@ -308,6 +341,35 @@ ipcMain.handle("store:uninstall", async (_e, pluginFile) => {
   } catch (e) {
     return { success: false, error: e.message };
   }
+});
+
+// ── Hub management ──
+ipcMain.handle("hub:config", async (_e, { hubType, action, name }) => {
+  const fs = require("fs");
+  const configFile = path.join(_findPluginsDir(), hubType === "transform" ? "transform_hub.json" : "filter_hub.json");
+  let cfg = { chain: [] };
+  try { cfg = JSON.parse(fs.readFileSync(configFile, "utf-8")); } catch (_) {}
+
+  if (action === "list") {
+    return { success: true, chain: cfg.chain || [] };
+  }
+  if (action === "add" && name) {
+    cfg.chain = [...(cfg.chain || []), { name, enabled: true }];
+    fs.writeFileSync(configFile, JSON.stringify(cfg, null, 2));
+    return { success: true };
+  }
+  if (action === "remove" && name) {
+    cfg.chain = (cfg.chain || []).filter(e => e.name !== name);
+    fs.writeFileSync(configFile, JSON.stringify(cfg, null, 2));
+    return { success: true };
+  }
+  if (action === "reorder" && name) {
+    const order = name.split(",");
+    cfg.chain = order.map(n => (cfg.chain || []).find(e => e.name === n) || { name: n, enabled: true });
+    fs.writeFileSync(configFile, JSON.stringify(cfg, null, 2));
+    return { success: true };
+  }
+  return { success: false, error: "Unknown action" };
 });
 
 // ── open plugin dir for store ──
