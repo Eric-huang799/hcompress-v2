@@ -237,8 +237,8 @@ ipcMain.handle("dialog:openDirectory", async () => {
 
 // ── Plugin Store ──
 const STORE_URLS = [
+  "https://api.github.com/repos/Eric-huang799/hcompress-win-plugins/contents/index.json",
   "https://cdn.jsdelivr.net/gh/Eric-huang799/hcompress-win-plugins@main/index.json",
-  "https://raw.githubusercontent.com/Eric-huang799/hcompress-win-plugins/main/index.json",
 ];
 const STORE_RAW_BASES = [
   "https://cdn.jsdelivr.net/gh/Eric-huang799/hcompress-win-plugins@main/",
@@ -278,7 +278,14 @@ async function _netFetchMulti(urls) {
 ipcMain.handle("store:fetch", async () => {
   try {
     const resp = await _netFetchMulti(STORE_URLS);
-    const parsed = await resp.json();
+    const text = await resp.text();
+    let parsed;
+
+    // GitHub API returns { content: "<base64>", encoding: "base64" }
+    try { parsed = JSON.parse(text); } catch (_) { throw new Error("数据格式错误"); }
+    if (parsed.content && parsed.encoding === "base64") {
+      parsed = JSON.parse(Buffer.from(parsed.content, "base64").toString("utf-8"));
+    }
 
     // Check external plugins dir
     const pluginsDir = _findPluginsDir();

@@ -157,3 +157,13 @@ input[type="range"] { accent-color: var(--accent); }
 }
 .theme-btn.active { background: var(--surface); color: var(--fg); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
 [data-theme="dark"] .theme-btn.active { box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+
+/* ── Wiring Panel ── */
+@keyframes blinkPulse { 0%, 100% { opacity: .4; } 50% { opacity: 1; } }
+.slot-blink { animation: blinkPulse .8s ease-in-out infinite; cursor: pointer; }
+.plugin-card-selected { border-color: var(--accent) !important; box-shadow: 0 0 12px rgba(108,140,255,.3); }
+.plugin-card-dim { opacity: .35; pointer-events: none; }
+.plugin-card-disabled { border-color: #444 !important; background: #1a1a1a !important; color: #666 !important; }
+.pipeline-slot { border-left: 3px solid var(--accent); }
+.system-slot { border-left: 3px solid var(--red); }
+.hub-slot { border-left: 3px solid var(--accent2); margin-left: 16px; }

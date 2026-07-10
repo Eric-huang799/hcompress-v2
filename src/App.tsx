@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useTheme } from "./hooks/useTheme";
 import "./styles/theme.css";
 
@@ -392,190 +392,255 @@ function PluginStore() {
   );
 }
 
-/* ── Plugin Manager ── */
-interface PluginState {
+
+/* ── Plugin Wiring Panel ── */
+interface PluginInfo {
   id: string; name: string; version: string; type: string;
   description: string; author: string; priority: number;
-  status: "enabled" | "disabled" | "error";
+  enabled: boolean; isHub?: boolean; subCount?: number;
   errorMsg?: string;
-  isHub?: boolean; subCount?: number;
 }
+const PIPELINE_SLOTS = ["transform","filter","codec","checksum","io","splitter","matcher"];
+const SYSTEM_SLOTS = ["hook","extension","observer"];
+const SLOT_LABELS: Record<string,string> = { transform:"Transform", filter:"Filter", codec:"Codec", checksum:"Checksum", io:"IO Backend", splitter:"Splitter", matcher:"MatchFinder", hook:"Hook", extension:"Extension", observer:"Observer" };
 
 function PluginManager() {
-  const [plugins, setPlugins] = useState<PluginState[]>([]);
+  const [allPlugins, setAllPlugins] = useState<PluginInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState("");
+  const [selRight, setSelRight] = useState<string | null>(null);
+  const [confirmSlot, setConfirmSlot] = useState<{plugName:string; slotType:string; subOf:string; action?:string; existingName?:string} | null>(null);
+  const [hubChildren, setHubChildren] = useState<Record<string,string[]>>({});
+  const [slotDisabled, setSlotDisabled] = useState<Set<string>>(new Set());  // in-slot but turned off
 
-  const fetchPlugins = useCallback(() => {
-    const api = (window as any).hcompress;
-    if (api?.listPlugins) {
-      api.listPlugins().then((r: any) => {
-        if (r?.success && r.plugins) {
-          setPlugins(r.plugins.map((p: any) => ({
-            id: p.name.toLowerCase().replace(/[^a-z0-9]/g, "_"),
-            name: p.name,
-            version: p.version || "0.0.0",
-            type: p.plugin_type,
-            description: p.description || "",
-            author: p.author || "",
-            priority: p.priority ?? 100,
-            status: p.enabled ? "enabled" : "disabled",
-          })));
-        } else {
-          setPlugins([
-            { id: "bomb_guard", name: "BombGuard", version: "1.0.0", type: "decompress-hook", description: "压缩炸弹检测", author: "hcompress", priority: 10, status: "enabled" },
-            { id: "broken_demo", name: "BrokenPlugin", version: "0.0.0", type: "extension", description: "示例插件，演示错误状态", author: "", priority: 100, status: "error", errorMsg: "SyntaxError: invalid syntax" },
-          ]);
-        }
-        setLoading(false);
-      }).catch(() => {
-        setPlugins([
-          { id: "bomb_guard", name: "BombGuard", version: "1.0.0", type: "decompress-hook", description: "压缩炸弹检测", author: "hcompress", priority: 10, status: "enabled" },
-          { id: "broken_demo", name: "BrokenPlugin", version: "0.0.0", type: "extension", description: "示例插件，演示错误状态", author: "", priority: 100, status: "error", errorMsg: "SyntaxError: invalid syntax" },
-        ]);
-        setLoading(false);
-      });
-    } else {
-      setPlugins([
-        { id: "bomb_guard", name: "BombGuard", version: "1.0.0", type: "decompress-hook", description: "压缩炸弹检测", author: "hcompress", priority: 10, status: "enabled" },
-        { id: "broken_demo", name: "BrokenPlugin", version: "0.0.0", type: "extension", description: "示例插件，演示错误状态", author: "", priority: 100, status: "error", errorMsg: "SyntaxError: invalid syntax" },
-      ]);
-      setLoading(false);
-    }
-  }, []);
-
-  // Initial load
-  useState(() => { fetchPlugins(); });
-
-  // Auto-refresh on file watcher events
-  useState(() => {
-    const api = (window as any).hcompress;
-    if (api?.onPluginsChanged) {
-      api.onPluginsChanged((info: any) => {
-        setToast(`🔄 检测到新插件: ${info.file}`);
-        setTimeout(() => {
-          fetchPlugins();
-          setToast(`✅ 插件 ${info.file} 已加载`);
-          setTimeout(() => setToast(""), 3000);
-        }, 500);
-      });
-    }
-  });
-
-  const toggle = async (id: string, name: string, current: string) => {
-    const api = (window as any).hcompress;
-    if (api?.enablePlugin && api?.disablePlugin) {
-      if (current === "enabled") {
-        await api.disablePlugin(name);
-        setToast(`🔌 ${name} 已关闭`);
-      } else {
-        await api.enablePlugin(name);
-        setToast(`🔌 ${name} 已启用`);
+  const api = (window as any).hcompress;
+  const refresh = useCallback(async () => {
+    if (!api?.listPlugins) { setLoading(false); return; }
+    try {
+      const r = await api.listPlugins();
+      if (r?.plugins) {
+        setAllPlugins(r.plugins.map((p:any) => ({
+          id: p.name.toLowerCase().replace(/[^a-z0-9]/g,"_"),
+          name:p.name, version:p.version||"0.0.0", type:p.plugin_type,
+          description:p.description||"", author:p.author||"",
+          priority:p.priority??100, enabled:p.enabled,
+          isHub:!!p.is_hub, subCount:p.sub_count||0,
+        })));
       }
-      setTimeout(() => setToast(""), 2500);
-      fetchPlugins();
+    } catch (_) {}
+    setLoading(false);
+  }, []);
+  useState(() => { refresh(); });
+  useState(() => { if (api?.onPluginsChanged) api.onPluginsChanged(() => setTimeout(refresh, 800)); });
+
+  const pByName = (n:string) => allPlugins.find(p=>p.name===n);
+  const slotPlugins = (slot:string) => allPlugins.filter(p => (p.enabled || slotDisabled.has(p.name)) && p.type === slot);
+  const rightPlugins = allPlugins.filter(p => !p.enabled && !slotDisabled.has(p.name));
+
+  const send = (msg:string) => { setToast(msg); setTimeout(()=>setToast(""),2500); };
+
+  const doToggle = async (name:string) => {
+    const p = pByName(name); if (!p) return;
+    if (p.enabled) {
+      await api.disablePlugin(name);
+      setSlotDisabled(prev => new Set(prev).add(name));
+      send(name+" 已关闭（仍占槽位）");
     } else {
-      setPlugins(prev => prev.map(p => {
-        if (p.id !== id) return p;
-        return { ...p, status: (current === "enabled" ? "disabled" : "enabled") as "enabled" | "disabled" };
-      }));
+      await api.enablePlugin(name);
+      setSlotDisabled(prev => { const n = new Set(prev); n.delete(name); return n; });
+      send(name+" 已启用");
     }
+    refresh();
+  };
+  const doEject = async (name:string, subOf?:string) => {
+    if (subOf) {
+      await api.manageHub?.(pByName(subOf)?.type==="filter"?"filter":"transform","remove",name);
+      setHubChildren(prev=>({...prev,[subOf]:(prev[subOf]||[]).filter(n=>n!==name)}));
+    } else { await api.disablePlugin(name); }
+    setSlotDisabled(prev => { const n = new Set(prev); n.delete(name); return n; });
+    send(name+" 已弹出"); refresh();
+  };
+  const doConnect = async (plugName:string, slotType:string, subOf:string) => {
+    if (subOf) {
+      await api.manageHub?.(slotType,"add",plugName);
+      setHubChildren(prev=>({...prev,[subOf]:[...(prev[subOf]||[]),plugName]}));
+    } else { await api.enablePlugin(plugName); }
+    setConfirmSlot(null); setSelRight(null); send(plugName+" 已连接"); refresh();
   };
 
-  const statusIcon = (s: string) => {
-    if (s === "enabled") return <span style={{ color: "var(--green)" }}>● 已启用</span>;
-    if (s === "error") return <span style={{ color: "var(--red)" }}>● 启用失败</span>;
-    return <span style={{ color: "var(--dim)" }}>○ 已关闭</span>;
+  const doCreateHub = async (plugName:string, existingName:string, slotType:string) => {
+    // 1. Disable existing plugin
+    await api.disablePlugin(existingName);
+    // 2. Find Hub plugin of matching type
+    const hubName = slotType==="filter"?"FilterHub":"TransformHub";
+    const hub = pByName(hubName);
+    if (!hub || hub.enabled) {
+      // Hub already connected? Just add both to it
+      const hubConnection = allPlugins.find(p=>p.isHub&&p.enabled&&p.type===slotType);
+      if (hubConnection) {
+        await api.manageHub?.(slotType, "add", existingName);
+        await api.manageHub?.(slotType, "add", plugName);
+        await api.enablePlugin(plugName);
+        setHubChildren(prev=>({...prev,[hubConnection.name]:[...(prev[hubConnection.name]||[]),existingName,plugName]}));
+        send("已接入 "+hubConnection.name+" 扩展坞"); refresh(); return;
+      }
+      // Enable the hub if not already
+      await api.enablePlugin(hubName);
+    }
+    // 3. Add both to hub chain
+    await api.manageHub?.(slotType, "add", existingName);
+    await api.manageHub?.(slotType, "add", plugName);
+    await api.enablePlugin(plugName);
+    setHubChildren(prev=>({...prev,[hubName]:[existingName,plugName]}));
+    setConfirmSlot(null); setSelRight(null); send(existingName+" + "+plugName+" 已接入扩展坞"); refresh();
+  };
+
+  const renderSlot = (slot:string, isSystem:boolean) => {
+    const conn = slotPlugins(slot);
+    const isBlink = !!selRight && (pByName(selRight)?.type||"") === slot;
+    const slotFull = PIPELINE_SLOTS.includes(slot) && conn.filter(c=>!c.isHub).length >= 1;
+    const hubConn = conn.filter(c=>c.isHub);
+    const plainConn = conn.filter(c=>!c.isHub);
+    return (
+      <div key={slot} style={{padding:"10px 12px",margin:"6px 0",borderRadius:10,border:isSystem?"2px solid rgba(229,83,91,.2)":"2px solid rgba(108,140,255,.15)",background:"var(--card)",transition:"all .15s",...(isBlink?{animation:"blinkPulse .8s ease-in-out infinite",cursor:"pointer",boxShadow:"0 0 8px rgba(108,140,255,.3)"}:{})}}
+        onClick={()=>{
+          if(!isBlink||!selRight)return;
+          if(slotFull){
+            const existName = plainConn[0]?.name || "";
+            setConfirmSlot({plugName:selRight,slotType:slot,subOf:"",action:"createHub",existingName:existName});
+            return;
+          }
+          setConfirmSlot({plugName:selRight,slotType:slot,subOf:""});
+        }}>
+        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+          <span style={{fontSize:".9em",fontWeight:600,color:isSystem?"var(--red)":"var(--accent)"}}>{isSystem?"▣":"▢"}</span>
+          <span style={{fontSize:".85em",fontWeight:600}}>{SLOT_LABELS[slot]}</span>
+          <span style={{fontSize:".7em",color:"var(--dim)"}}>{isSystem?"多槽":"单槽"}</span>
+          {isBlink && <span style={{fontSize:".7em",color:"var(--yellow)",marginLeft:"auto"}}>← 点击连接</span>}
+        </div>
+        {conn.length===0 && <div style={{fontSize:".8em",color:"var(--dim)",textAlign:"center",padding:"10px 0",fontStyle:"italic"}}>{isBlink?"点击接入":"空槽位"}</div>}
+        {plainConn.map(c=>{
+          const effEnabled = c.enabled && !slotDisabled.has(c.name);
+          return (
+          <div key={c.name} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",margin:"3px 0",borderRadius:8,border:effEnabled?"2px solid rgba(108,140,255,.3)":"2px dashed rgba(255,255,255,.08)",background:effEnabled?"var(--surface)":"rgba(255,255,255,.02)"}}>
+            <div><span style={{fontWeight:600,fontSize:".88em",color:effEnabled?"var(--fg)":"var(--muted)"}}>{c.name}{!effEnabled&&slotDisabled.has(c.name)?" (已关闭)":""}</span><span style={{fontSize:".7em",color:"var(--dim)",marginLeft:8}}>v{c.version}</span></div>
+            <span style={{display:"flex",gap:6,alignItems:"center"}}>
+              <span style={{fontSize:".7em",color:effEnabled?"var(--green)":"var(--dim)"}}>{effEnabled?"🟢":"⚫"}</span>
+              <button className="btn btn-outline" style={{fontSize:".75em",padding:"3px 10px"}} onClick={e=>{e.stopPropagation();doToggle(c.name);}}>{effEnabled?"关闭":"开启"}</button>
+              <button className="btn btn-outline" style={{fontSize:".75em",padding:"3px 10px"}} onClick={e=>{e.stopPropagation();doEject(c.name);}}>弹出</button>
+            </span>
+          </div>
+          );
+        })}
+        {hubConn.map(c=>{
+          const subs = hubChildren[c.name]||[];
+          return (
+            <div key={c.name} style={{margin:"3px 0"}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",borderRadius:8,background:"rgba(69,217,193,.08)",border:"2px solid rgba(69,217,193,.25)"}}>
+                <span><span style={{fontWeight:600,fontSize:".88em"}}>{c.name}</span><span style={{fontSize:".7em",color:"var(--accent2)",marginLeft:6}}>扩展坞</span></span>
+                {subs.length===0&&<button className="btn btn-outline" style={{fontSize:".75em",padding:"3px 10px"}} onClick={e=>{e.stopPropagation();doEject(c.name);}}>弹出</button>}
+              </div>
+              {subs.map(sn=>{
+                const sp = pByName(sn);
+                const subBlink = isBlink;
+                return (
+                  <div key={sn} style={{
+                    marginLeft:16, padding:"6px 10px", margin:"3px 0", borderRadius:7,
+                    border:subBlink?"2px solid rgba(108,140,255,.5)":"2px solid rgba(108,140,255,.15)",
+                    background:"var(--bg)", display:"flex", alignItems:"center", justifyContent:"space-between",
+                    ...(subBlink?{animation:"blinkPulse .8s ease-in-out infinite", cursor:"pointer"}:{})
+                  }} onClick={(e) => {
+                    e.stopPropagation();
+                    if(!subBlink||!selRight) return;
+                    setConfirmSlot({plugName:selRight, slotType:slot, subOf:c.name});
+                  }}>
+                    <span style={{fontSize:".82em"}}>🔵 {sn}</span>
+                    {subBlink && <span style={{fontSize:".65em",color:"var(--yellow)"}}>← 点击连接</span>}
+                    <span style={{display:"flex",gap:6}}>
+                      <button className="btn btn-outline" style={{fontSize:".72em",padding:"2px 8px"}} onClick={e=>{e.stopPropagation();doToggle(sn);}}>{sp?.enabled?"关闭":"开启"}</button>
+                      <button className="btn btn-outline" style={{fontSize:".72em",padding:"2px 8px"}} onClick={e=>{e.stopPropagation();doEject(sn,c.name);}}>弹出</button>
+                    </span>
+                  </div>
+                );
+              })}
+              {/* Empty sub-slot for new connections */}
+              <div key={"empty-"+c.name} style={{
+                marginLeft:16, padding:"6px 10px", margin:"3px 0", borderRadius:7,
+                border:isBlink?"2px dashed rgba(108,140,255,.4)":"2px dashed var(--border)",
+                background:isBlink?"rgba(108,140,255,.04)":"transparent", textAlign:"center",
+                ...(isBlink?{animation:"blinkPulse .8s ease-in-out infinite", cursor:"pointer"}:{})
+              }} onClick={(e) => {
+                e.stopPropagation();
+                if(!isBlink||!selRight) return;
+                setConfirmSlot({plugName:selRight, slotType:slot, subOf:c.name});
+              }}>
+                <span style={{fontSize:".72em",color:isBlink?"var(--accent)":"var(--dim)"}}>
+                  {isBlink ? "点击连接子接口" : "+ 空子接口"}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontWeight: 600 }}>
-          已加载 {plugins.length} 个插件
-          <span style={{ fontWeight: 400, color: "var(--dim)", fontSize: ".85em", marginLeft: 8 }}>
-            ({plugins.filter(p => p.status === "enabled").length} 启用)
-          </span>
+    <div style={{display:"flex",flexDirection:"column",gap:12,height:"100%"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+        <span style={{fontWeight:700,fontSize:"1.05em"}}>🔌 插件接线面板</span>
+        <span style={{display:"flex",gap:8}}>
+          <button className="btn btn-outline" style={{fontSize:".8em"}} onClick={refresh}>🔄 刷新</button>
+          <button className="btn btn-outline" style={{fontSize:".8em"}} onClick={()=>api?.openPluginDir()}>📂 目录</button>
         </span>
-        <button className="btn btn-outline" style={{ fontSize: ".8em" }} onClick={() => {
-          if (api) api.openPluginDir();
-        }}>
-          📂 打开插件目录
-        </button>
       </div>
-      {loading && (
-        <div className="card" style={{ textAlign: "center", padding: 24, color: "var(--muted)" }}>
-          加载插件列表中…
+      {loading&&<div className="card" style={{textAlign:"center",padding:24,color:"var(--muted)"}}>加载中...</div>}
+      <div style={{display:"flex",gap:14,flex:1,minHeight:0}}>
+        <div style={{flex:1,overflowY:"auto",paddingRight:6}}>
+          <div style={{fontSize:".78em",color:"var(--dim)",marginBottom:6,fontWeight:600}}>🔴 系统接口 ({SYSTEM_SLOTS.length})</div>
+          {SYSTEM_SLOTS.map(s=>renderSlot(s,true))}
+          <div style={{fontSize:".78em",color:"var(--dim)",margin:"16px 0 6px",fontWeight:600}}>🔵 普通接口 ({PIPELINE_SLOTS.length})</div>
+          {PIPELINE_SLOTS.map(s=>renderSlot(s,false))}
         </div>
-      )}
-      {!loading && plugins.length === 0 && (
-        <div className="card" style={{ textAlign: "center", padding: 24, color: "var(--muted)" }}>
-          暂无插件。将 <code style={{ color: "var(--accent)" }}>.py</code> 文件放入插件目录即可。
-        </div>
-      )}
-      {plugins.map(p => (
-        <div key={p.id} className="card" style={{
-          opacity: p.status === "disabled" ? .55 : 1,
-          borderColor: p.status === "error" ? "rgba(229,83,91,.25)" : undefined,
-          transition: "opacity .2s",
-        }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                <span style={{ fontWeight: 600 }}>{p.name}</span>
-                <span style={{ fontSize: ".7em", color: "var(--dim)", background: "var(--bg)", padding: "1px 6px", borderRadius: 4 }}>
-                  v{p.version}
-                </span>
-                <span style={{ fontSize: ".72em", color: "var(--accent2)", background: "rgba(69,217,193,.1)", padding: "1px 7px", borderRadius: 4 }}>
-                  {p.type}
-                </span>
-                <span style={{ fontSize: ".7em", color: "var(--dim)", marginLeft: "auto" }} title="优先级（越小越优先）">
-                  P{p.priority}
-                </span>
+        <div style={{width:270,overflowY:"auto",borderLeft:"1px solid var(--border)",paddingLeft:12,flexShrink:0}}>
+          <div style={{fontSize:".78em",color:"var(--dim)",marginBottom:8,fontWeight:600}}>🟢 可用插件 ({rightPlugins.length})</div>
+          {rightPlugins.length===0&&<div style={{fontSize:".8em",color:"var(--muted)",textAlign:"center",padding:20}}>全部已连接 ✓</div>}
+          {rightPlugins.map(p=>(
+            <div key={p.id} className={"card "+(selRight===p.name?"plugin-card-selected":"")+(selRight&&selRight!==p.name?"plugin-card-dim":"")} style={{padding:"12px",margin:"8px 0",cursor:selRight===p.name?"default":"pointer",borderRadius:10}}
+              onClick={()=>{setSelRight(selRight===p.name?null:p.name);}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+                <span style={{fontSize:"1.1em"}}>{p.isHub?"🔌":(p.type==="hook"?"🔴":"🔵")}</span>
+                <span style={{fontWeight:600,fontSize:".85em"}}>{p.name}</span>
+                <span style={{fontSize:".68em",color:"var(--dim)"}}>v{p.version}</span>
               </div>
-              {p.description && (
-                <div style={{ fontSize: ".82em", color: "var(--muted)", marginBottom: 2 }}>{p.description}</div>
-              )}
-              {p.author && (
-                <div style={{ fontSize: ".72em", color: "var(--dim)" }}>by {p.author}</div>
-              )}
+              <div style={{fontSize:".72em",color:"var(--muted)",marginBottom:4}}>{p.type} · {p.author||"社区"}</div>
+              {p.description&&<div style={{fontSize:".72em",color:"var(--muted)",marginBottom:6}}>{p.description.slice(0,45)}</div>}
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: 16, marginTop: 2 }}>
-              {statusIcon(p.status)}
-              <button
-                className="btn btn-outline"
-                style={{ fontSize: ".75em", padding: "4px 12px" }}
-                onClick={() => toggle(p.id, p.name, p.status)}
-              >
-                {p.status === "enabled" ? "关闭" : "启用"}
-              </button>
-            </div>
-          </div>
-          {p.errorMsg && (
-            <div style={{ marginTop: 10, padding: "8px 12px", background: "rgba(229,83,91,.08)", borderRadius: 8, fontSize: ".8em", color: "var(--red)", fontFamily: "monospace" }}>
-              ⚠ {p.errorMsg}
-            </div>
-          )}
-        </div>
-      ))}
-      <div className="card" style={{ borderStyle: "dashed", textAlign: "center", padding: 24 }}>
-        <div style={{ color: "var(--muted)", fontSize: ".9em" }}>
-          将插件 <code style={{ color: "var(--accent)" }}>.py</code> 文件放入插件目录即可自动加载<br />
-          <span style={{ fontSize: ".8em" }}>
-            插件错误会被自动隔离，不影响主程序运行
-          </span>
+          ))}
         </div>
       </div>
-      {toast && (
-        <div style={{
-          position: "fixed", bottom: 24, right: 24, zIndex: 300,
-          background: "var(--card)", border: "1px solid var(--accent)",
-          borderRadius: 10, padding: "14px 20px", boxShadow: "var(--shadow)",
-          fontSize: ".88em", animation: "slideUp .3s ease-out",
-        }}>
-          {toast}
-        </div>
-      )}
+      {confirmSlot && (confirmSlot.action === "createHub" ? (
+        <div className="modal-overlay" onClick={()=>{setConfirmSlot(null);setSelRight(null);}}><div className="modal" style={{maxWidth:440}} onClick={e=>e.stopPropagation()}>
+          <div style={{fontWeight:700,fontSize:"1.15em",marginBottom:12}}>🔌 创建扩展坞</div>
+          <div style={{fontSize:".88em",color:"var(--muted)",marginBottom:16}}>
+            {SLOT_LABELS[confirmSlot.slotType]} 单槽已满。创建扩展坞，将 <strong>{confirmSlot.existingName}</strong> 和 <strong>{confirmSlot.plugName}</strong> 同时接入？
+          </div>
+          <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+            <button className="btn btn-outline" onClick={()=>{setConfirmSlot(null);setSelRight(null);}}>取消</button>
+            <button className="btn btn-primary" onClick={()=>doCreateHub(confirmSlot.plugName,confirmSlot.existingName!,confirmSlot.slotType)}>创建扩展坞并接入</button>
+          </div>
+        </div></div>
+      ) : (
+        <div className="modal-overlay" onClick={()=>{setConfirmSlot(null);setSelRight(null);}}><div className="modal" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
+          <div style={{fontWeight:700,fontSize:"1.15em",marginBottom:12}}>{confirmSlot.subOf?("连接至 "+confirmSlot.subOf+" 子接口"):("连接至 "+SLOT_LABELS[confirmSlot.slotType])}</div>
+          <div style={{fontSize:".88em",color:"var(--muted)",marginBottom:16}}>将 <strong>{confirmSlot.plugName}</strong> 接入 <strong>{SLOT_LABELS[confirmSlot.slotType]}</strong> 接口</div>
+          <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+            <button className="btn btn-outline" onClick={()=>{setConfirmSlot(null);setSelRight(null);}}>取消</button>
+            <button className="btn btn-primary" onClick={()=>doConnect(confirmSlot.plugName,confirmSlot.slotType,confirmSlot.subOf)}>确认连接</button>
+          </div>
+        </div></div>
+      ))}
+      {toast&&(<div style={{position:"fixed",bottom:28,right:28,zIndex:300,background:"var(--card)",border:"1px solid var(--accent)",borderRadius:12,padding:"16px 24px",boxShadow:"var(--shadow)",fontSize:".9em",animation:"slideUp .3s ease-out"}}>{toast}</div>)}
     </div>
   );
 }
@@ -595,6 +660,12 @@ export default function App() {
   const [outputDir, setOutputDir] = useState("");
   const [pluginCount, setPluginCount] = useState(3);
   const [subCount, setSubCount] = useState(0);
+  const [pluginKey, setPluginKey] = useState(0);
+
+  // Auto-refresh plugin panel when navigating to plugins page
+  useEffect(() => {
+    if (nav === "plugins") setPluginKey(k => k + 1);
+  }, [nav]);
 
   // Fetch plugin count on mount and on page nav
   const refreshPluginCount = useCallback(() => {
@@ -672,12 +743,11 @@ export default function App() {
     const dir = outputDir || files[0].path.replace(/[\\/][^\\/]+$/, "");
     let gotBomb = false;
     for (const f of files) {
-      // Strip known archive extensions
-      let outName = f.name;
+      let outName: string;
       const extPat = /\.(hcf|gz|bz2|xz|zip|7z|rar|zst|zstd|br|lz4|tar(\.(gz|bz2|xz|zst))?)$/i;
       if (extPat.test(f.name))
-        outName = f.name.replace(extPat, "") + "_解压";
-      else outName = f.name + "_解压";
+        outName = f.name.replace(extPat, "");
+      else outName = f.name + ".out";
       const out = dir + "\\" + outName;
       try {
         const r = await api.decompress(f.path, out);
@@ -732,7 +802,7 @@ export default function App() {
           ) : nav === "store" ? (
             <PluginStore />
           ) : nav === "plugins" ? (
-            <PluginManager />
+            <PluginManager key={pluginKey} />
           ) : null}
         </div>
       </main>
